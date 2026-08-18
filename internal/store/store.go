@@ -28,6 +28,11 @@ type Stats struct {
 	TotalDurationSec int64
 }
 
+type RecordingJob struct {
+	CallID       string
+	RecordingURL string
+}
+
 // Store is a Postgres-backed repository.
 type Store struct {
 	pool *pgxpool.Pool
@@ -230,4 +235,45 @@ func (s *Store) AccountStats(ctx context.Context, accountID string) (Stats, erro
 		return Stats{}, err
 	}
 	return st, nil
+}
+
+// PendingRecordingJobs returns recording jobs that still need processing.
+func (s *Store) PendingRecordingJobs(ctx context.Context) ([]RecordingJob, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT call_id, recording_url
+		FROM recording_jobs
+		WHERE status = 'pending'
+		ORDER BY created_at
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var jobs []RecordingJob
+	for rows.Next() {
+		var job RecordingJob
+		if err := rows.Scan(&job.CallID, &job.RecordingURL); err != nil {
+			return nil, err
+		}
+		jobs = append(jobs, job)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return jobs, nil
+}
+
+// MarkRecordingJobProcessed marks a durable recording job as completed.
+func (s *Store) MarkRecordingJobProcessed(ctx context.Context, callID string) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE recording_jobs
+		SET status = 'processed',
+		    processed_at = now()
+		WHERE call_id = $1
+	`, callID)
+
+	return err
 }

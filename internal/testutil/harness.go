@@ -31,6 +31,17 @@ func IDs(t *testing.T, s *store.Store) (eventID, callID, accountID string) {
 
 	clean := func() {
 		ctx := context.Background()
+		// Delete child rows first because recording_jobs references calls.
+		if _, err := s.Pool().Exec(ctx,
+			`DELETE FROM recording_jobs
+	 WHERE call_id IN (
+		 SELECT call_id FROM calls WHERE account_id = $1
+	 )`,
+			accountID,
+		); err != nil {
+			t.Fatalf("clean recording_jobs: %v", err)
+		}
+
 		for _, table := range []string{"events", "calls", "account_stats"} {
 			if _, err := s.Pool().Exec(ctx,
 				"DELETE FROM "+table+" WHERE account_id = $1", accountID); err != nil {
