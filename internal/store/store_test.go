@@ -3,6 +3,7 @@ package store_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/convin/webhook-ingest/internal/store"
 	"github.com/convin/webhook-ingest/internal/testutil"
@@ -88,5 +89,116 @@ func TestUpsertCallThenMarkRecordingProcessed(t *testing.T) {
 	}
 	if !processed {
 		t.Fatal("expected recording_processed to be true")
+	}
+}
+
+func TestPendingRecordingJobs(t *testing.T) {
+	s := testutil.NewStore(t)
+	_, callID, accountID := testutil.IDs(t, s)
+	ctx := context.Background()
+
+	evt := store.Event{
+		CallID:       callID,
+		AccountID:    accountID,
+		Status:       "completed",
+		DurationSec:  10,
+		RecordingURL: "https://example.com/test.wav",
+	}
+
+	if err := s.UpsertCall(ctx, evt); err != nil {
+		t.Fatalf("UpsertCall: %v", err)
+	}
+
+	_, err := s.Pool().Exec(ctx, `
+		INSERT INTO recording_jobs (call_id, recording_url)
+		VALUES ($1, $2)
+	`, callID, evt.RecordingURL)
+	if err != nil {
+		t.Fatalf("insert recording job: %v", err)
+	}
+
+	jobs, err := s.PendingRecordingJobs(ctx)
+	if err != nil {
+		t.Fatalf("PendingRecordingJobs: %v", err)
+	}
+
+	if len(jobs) != 1 {
+		t.Fatalf("got %d pending jobs, want 1", len(jobs))
+	}
+
+	if jobs[0].CallID != callID {
+		t.Fatalf("got call ID %q, want %q", jobs[0].CallID, callID)
+	}
+
+	if jobs[0].RecordingURL != evt.RecordingURL {
+		t.Fatalf(
+			"got recording URL %q, want %q",
+			jobs[0].RecordingURL,
+			evt.RecordingURL,
+		)
+	}
+}
+
+func TestMarkRecordingJobProcessed(t *testing.T) {
+	s := testutil.NewStore(t)
+	_, callID, accountID := testutil.IDs(t, s)
+	ctx := context.Background()
+
+	evt := store.Event{
+		CallID:       callID,
+		AccountID:    accountID,
+		Status:       "completed",
+		DurationSec:  10,
+		RecordingURL: "https://example.com/test.wav",
+	}
+
+	if err := s.UpsertCall(ctx, evt); err != nil {
+		t.Fatalf("UpsertCall: %v", err)
+	}
+
+	_, err := s.Pool().Exec(ctx, `
+		INSERT INTO recording_jobs (call_id, recording_url)
+		VALUES ($1, $2)
+	`, callID, evt.RecordingURL)
+	if err != nil {
+		t.Fatalf("insert recording job: %v", err)
+	}
+
+	if err := s.MarkRecordingJobProcessed(ctx, callID); err != nil {
+		t.Fatalf("MarkRecordingJobProcessed: %v", err)
+	}
+
+	var status string
+	var processedAt *time.Time
+
+	err = s.Pool().QueryRow(ctx, `
+		SELECT status, processed_at
+		FROM recording_jobs
+		WHERE call_id = $1
+	`, callID).Scan(&status, &processedAt)
+	if err != nil {
+		t.Fatalf("scan recording job: %v", err)
+	}
+
+	if status != "processed" {
+		t.Fatalf("got status %q, want processed", status)
+	}
+
+	if processedAt == nil {
+		t.Fatal("expected processed_at to be set")
+	}
+
+	var recordingProcessed bool
+	err = s.Pool().QueryRow(ctx, `
+		SELECT recording_processed
+		FROM calls
+		WHERE call_id = $1
+	`, callID).Scan(&recordingProcessed)
+	if err != nil {
+		t.Fatalf("scan call: %v", err)
+	}
+
+	if !recordingProcessed {
+		t.Fatal("expected call recording_processed to be true")
 	}
 }
