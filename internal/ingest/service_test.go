@@ -172,3 +172,118 @@ func TestRecordingIsMarkedProcessed(t *testing.T) {
 
 	t.Fatal("expected recording to be marked processed within 2 seconds")
 }
+
+func TestRecordingWorkerProcessesDurableJob(t *testing.T) {
+	srv, st := testutil.NewServer(t)
+	eventID, callID, accountID := testutil.IDs(t, st)
+	ctx := context.Background()
+
+	body := eventJSON(eventID, callID, accountID)
+
+	if resp := post(t, srv.URL+"/webhooks/calls", body); resp.StatusCode != http.StatusOK {
+		t.Fatalf("got %d, want 200", resp.StatusCode)
+	}
+
+	// Verify the webhook created a durable pending recording job.
+	var status string
+	err := st.Pool().QueryRow(ctx, `
+		SELECT status
+		FROM recording_jobs
+		WHERE call_id = $1
+	`, callID).Scan(&status)
+	if err != nil {
+		t.Fatalf("scan recording job: %v", err)
+	}
+
+	if status != "pending" {
+		t.Fatalf("got recording job status %q, want pending", status)
+	}
+
+	// The worker should eventually claim and process the job.
+	deadline := time.Now().Add(2 * time.Second)
+
+	for time.Now().Before(deadline) {
+		err := st.Pool().QueryRow(ctx, `
+			SELECT status
+			FROM recording_jobs
+			WHERE call_id = $1
+		`, callID).Scan(&status)
+		if err != nil {
+			t.Fatalf("scan recording job: %v", err)
+		}
+
+		if status == "processed" {
+			return
+		}
+
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	t.Fatalf("recording job was not processed within 2 seconds")
+}
+
+func TestRecordingWorkerProcessesStaleJob(t *testing.T) {
+	_, st := testutil.NewServer(t)
+	_, callID, accountID := testutil.IDs(t, st)
+	ctx := context.Background()
+
+	// Create the call record required by the recording_jobs foreign key.
+	_, err := st.Pool().Exec(ctx, `
+		INSERT INTO calls (
+			call_id,
+			account_id,
+			status,
+			duration_sec,
+			recording_url,
+			updated_at
+		)
+		VALUES ($1, $2, 'completed', 143, $3, now())
+	`, callID, accountID, "https://recordings.example.com/test.wav")
+	if err != nil {
+		t.Fatalf("insert call: %v", err)
+	}
+
+	// Simulate a job that was being processed when the service died.
+	_, err = st.Pool().Exec(ctx, `
+		INSERT INTO recording_jobs (
+			call_id,
+			recording_url,
+			status,
+			processing_at
+		)
+		VALUES (
+			$1,
+			$2,
+			'processing',
+			now() - interval '2 minutes'
+		)
+	`, callID, "https://recordings.example.com/test.wav")
+	if err != nil {
+		t.Fatalf("insert stale recording job: %v", err)
+	}
+
+	// The worker should reclaim the stale job and eventually process it.
+
+	deadline := time.Now().Add(3 * time.Second)
+
+	for time.Now().Before(deadline) {
+		var status string
+
+		err := st.Pool().QueryRow(ctx, `
+			SELECT status
+			FROM recording_jobs
+			WHERE call_id = $1
+		`, callID).Scan(&status)
+		if err != nil {
+			t.Fatalf("scan recording job: %v", err)
+		}
+
+		if status == "processed" {
+			return
+		}
+
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	t.Fatal("expected stale recording job to be recovered and processed")
+}

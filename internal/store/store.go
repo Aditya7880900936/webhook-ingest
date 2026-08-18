@@ -237,8 +237,9 @@ func (s *Store) AccountStats(ctx context.Context, accountID string) (Stats, erro
 	return st, nil
 }
 
-// ClaimRecordingJobs atomically claims pending recording jobs so that
-// multiple workers/instances cannot process the same job simultaneously.
+// ClaimRecordingJobs atomically claims pending or stale processing recording
+// jobs so that multiple workers/instances cannot process the same job
+// simultaneously.
 func (s *Store) ClaimRecordingJobs(ctx context.Context, limit int) ([]RecordingJob, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -250,6 +251,10 @@ func (s *Store) ClaimRecordingJobs(ctx context.Context, limit int) ([]RecordingJ
 		SELECT call_id, recording_url
 		FROM recording_jobs
 		WHERE status = 'pending'
+		   OR (
+				status = 'processing'
+				AND processing_at < now() - interval '1 minute'
+		   )
 		ORDER BY created_at
 		FOR UPDATE SKIP LOCKED
 		LIMIT $1

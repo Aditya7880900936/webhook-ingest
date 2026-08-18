@@ -70,7 +70,7 @@ func main() {
 	log.Info("shutting down")
 
 	// Stop background worker.
-	cancel()
+	workerCancel()
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(
 		context.Background(),

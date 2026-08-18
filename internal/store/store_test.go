@@ -260,3 +260,61 @@ func TestMarkRecordingJobProcessed(t *testing.T) {
 		t.Fatal("expected call recording_processed to be true")
 	}
 }
+
+func TestClaimRecordingJobsReclaimsStaleJob(t *testing.T) {
+	s := testutil.NewStore(t)
+	_, callID, accountID := testutil.IDs(t, s)
+	ctx := context.Background()
+
+	evt := store.Event{
+		CallID:       callID,
+		AccountID:    accountID,
+		Status:       "completed",
+		DurationSec:  10,
+		RecordingURL: "https://example.com/test.wav",
+	}
+
+	if err := s.UpsertCall(ctx, evt); err != nil {
+		t.Fatalf("UpsertCall: %v", err)
+	}
+
+	_, err := s.Pool().Exec(ctx, `
+		INSERT INTO recording_jobs (
+			call_id,
+			recording_url,
+			status,
+			processing_at
+		)
+		VALUES ($1, $2, 'processing', now() - interval '2 minutes')
+	`, callID, evt.RecordingURL)
+	if err != nil {
+		t.Fatalf("insert stale recording job: %v", err)
+	}
+
+	jobs, err := s.ClaimRecordingJobs(ctx, 10)
+	if err != nil {
+		t.Fatalf("ClaimRecordingJobs: %v", err)
+	}
+
+	if len(jobs) != 1 {
+		t.Fatalf("got %d jobs, want 1", len(jobs))
+	}
+
+	if jobs[0].CallID != callID {
+		t.Fatalf("got call ID %q, want %q", jobs[0].CallID, callID)
+	}
+
+	var status string
+	err = s.Pool().QueryRow(ctx, `
+		SELECT status
+		FROM recording_jobs
+		WHERE call_id = $1
+	`, callID).Scan(&status)
+	if err != nil {
+		t.Fatalf("scan status: %v", err)
+	}
+
+	if status != "processing" {
+		t.Fatalf("got status %q, want processing", status)
+	}
+}
