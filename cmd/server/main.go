@@ -23,7 +23,9 @@ const shutdownTimeout = 10 * time.Second
 func main() {
 	log := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	cfg := config.Load()
-	ctx := context.Background()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	st, err := store.New(ctx, cfg.PostgresDSN, cfg.DBMaxConns)
 	if err != nil {
@@ -40,12 +42,20 @@ func main() {
 	defer func() { _ = rdb.Close() }()
 
 	svc := ingest.New(st, stats.NewCache(), rdb, log)
+
+	// Start durable recording worker.
 	svc.StartRecordingWorker(ctx)
-	srv := &http.Server{Addr: cfg.HTTPAddr, Handler: httpapi.NewRouter(svc, log)}
+
+	srv := &http.Server{
+		Addr:    cfg.HTTPAddr,
+		Handler: httpapi.NewRouter(svc, log),
+	}
 
 	go func() {
 		log.Info("listening", "addr", cfg.HTTPAddr)
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+
+		if err := srv.ListenAndServe(); err != nil &&
+			!errors.Is(err, http.ErrServerClosed) {
 			log.Error("server stopped", "err", err)
 			os.Exit(1)
 		}
@@ -56,8 +66,16 @@ func main() {
 	<-stop
 
 	log.Info("shutting down")
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
-	defer cancel()
+
+	// Stop background worker.
+	cancel()
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(
+		context.Background(),
+		shutdownTimeout,
+	)
+	defer shutdownCancel()
+
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		log.Error("shutdown", "err", err)
 	}

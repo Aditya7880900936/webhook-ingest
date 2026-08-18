@@ -92,7 +92,7 @@ func TestUpsertCallThenMarkRecordingProcessed(t *testing.T) {
 	}
 }
 
-func TestPendingRecordingJobs(t *testing.T) {
+func TestClaimRecordingJobs(t *testing.T) {
 	s := testutil.NewStore(t)
 	_, callID, accountID := testutil.IDs(t, s)
 	ctx := context.Background()
@@ -117,13 +117,13 @@ func TestPendingRecordingJobs(t *testing.T) {
 		t.Fatalf("insert recording job: %v", err)
 	}
 
-	jobs, err := s.PendingRecordingJobs(ctx)
+	jobs, err := s.ClaimRecordingJobs(ctx, 10)
 	if err != nil {
-		t.Fatalf("PendingRecordingJobs: %v", err)
+		t.Fatalf("ClaimRecordingJobs: %v", err)
 	}
 
 	if len(jobs) != 1 {
-		t.Fatalf("got %d pending jobs, want 1", len(jobs))
+		t.Fatalf("got %d jobs, want 1", len(jobs))
 	}
 
 	if jobs[0].CallID != callID {
@@ -136,6 +136,64 @@ func TestPendingRecordingJobs(t *testing.T) {
 			jobs[0].RecordingURL,
 			evt.RecordingURL,
 		)
+	}
+
+	var status string
+	err = s.Pool().QueryRow(ctx, `
+		SELECT status
+		FROM recording_jobs
+		WHERE call_id = $1
+	`, callID).Scan(&status)
+	if err != nil {
+		t.Fatalf("scan status: %v", err)
+	}
+
+	if status != "processing" {
+		t.Fatalf("got status %q, want processing", status)
+	}
+}
+
+func TestClaimRecordingJobsDoesNotReclaimJob(t *testing.T) {
+	s := testutil.NewStore(t)
+	_, callID, accountID := testutil.IDs(t, s)
+	ctx := context.Background()
+
+	evt := store.Event{
+		CallID:       callID,
+		AccountID:    accountID,
+		Status:       "completed",
+		DurationSec:  10,
+		RecordingURL: "https://example.com/test.wav",
+	}
+
+	if err := s.UpsertCall(ctx, evt); err != nil {
+		t.Fatalf("UpsertCall: %v", err)
+	}
+
+	_, err := s.Pool().Exec(ctx, `
+		INSERT INTO recording_jobs (call_id, recording_url)
+		VALUES ($1, $2)
+	`, callID, evt.RecordingURL)
+	if err != nil {
+		t.Fatalf("insert recording job: %v", err)
+	}
+
+	first, err := s.ClaimRecordingJobs(ctx, 10)
+	if err != nil {
+		t.Fatalf("first claim: %v", err)
+	}
+
+	if len(first) != 1 {
+		t.Fatalf("first claim got %d jobs, want 1", len(first))
+	}
+
+	second, err := s.ClaimRecordingJobs(ctx, 10)
+	if err != nil {
+		t.Fatalf("second claim: %v", err)
+	}
+
+	if len(second) != 0 {
+		t.Fatalf("second claim got %d jobs, want 0", len(second))
 	}
 }
 

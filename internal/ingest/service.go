@@ -104,7 +104,7 @@ func (s *Service) recordingWorker(ctx context.Context) {
 
 // processPendingRecordingJobs loads and processes all currently pending jobs.
 func (s *Service) processPendingRecordingJobs(ctx context.Context) error {
-	jobs, err := s.store.PendingRecordingJobs(ctx)
+	jobs, err := s.store.ClaimRecordingJobs(ctx, 10)
 	if err != nil {
 		return err
 	}

@@ -237,29 +237,57 @@ func (s *Store) AccountStats(ctx context.Context, accountID string) (Stats, erro
 	return st, nil
 }
 
-// PendingRecordingJobs returns recording jobs that still need processing.
-func (s *Store) PendingRecordingJobs(ctx context.Context) ([]RecordingJob, error) {
-	rows, err := s.pool.Query(ctx, `
+// ClaimRecordingJobs atomically claims pending recording jobs so that
+// multiple workers/instances cannot process the same job simultaneously.
+func (s *Store) ClaimRecordingJobs(ctx context.Context, limit int) ([]RecordingJob, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	rows, err := tx.Query(ctx, `
 		SELECT call_id, recording_url
 		FROM recording_jobs
 		WHERE status = 'pending'
 		ORDER BY created_at
-	`)
+		FOR UPDATE SKIP LOCKED
+		LIMIT $1
+	`, limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
 	var jobs []RecordingJob
+
 	for rows.Next() {
 		var job RecordingJob
+
 		if err := rows.Scan(&job.CallID, &job.RecordingURL); err != nil {
 			return nil, err
 		}
+
 		jobs = append(jobs, job)
 	}
 
 	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	for _, job := range jobs {
+		_, err := tx.Exec(ctx, `
+			UPDATE recording_jobs
+			SET status = 'processing'
+			WHERE call_id = $1
+		`, job.CallID)
+
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
 
