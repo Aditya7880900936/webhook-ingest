@@ -45,6 +45,7 @@ func (c *Cache) Record(accountID string, durationSec int) {
 		s = &AccountStats{}
 		c.m[accountID] = s
 	}
+
 	s.CallCount++
 	s.TotalDurationSec += int64(durationSec)
 }
