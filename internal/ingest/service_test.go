@@ -149,20 +149,26 @@ func TestRecordingIsMarkedProcessed(t *testing.T) {
 	}
 
 	// Wait for async recording processing.
-	time.Sleep(100 * time.Millisecond)
+	deadline := time.Now().Add(2 * time.Second)
 
 	var processed bool
-	err := st.Pool().QueryRow(
-		ctx,
-		`SELECT recording_processed FROM calls WHERE call_id = $1`,
-		callID,
-	).Scan(&processed)
+	for time.Now().Before(deadline) {
+		err := st.Pool().QueryRow(
+			ctx,
+			`SELECT recording_processed FROM calls WHERE call_id = $1`,
+			callID,
+		).Scan(&processed)
 
-	if err != nil {
-		t.Fatalf("scan: %v", err)
+		if err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+
+		if processed {
+			return
+		}
+
+		time.Sleep(20 * time.Millisecond)
 	}
 
-	if !processed {
-		t.Fatal("expected recording to be marked processed")
-	}
+	t.Fatal("expected recording to be marked processed within 2 seconds")
 }

@@ -268,12 +268,31 @@ func (s *Store) PendingRecordingJobs(ctx context.Context) ([]RecordingJob, error
 
 // MarkRecordingJobProcessed marks a durable recording job as completed.
 func (s *Store) MarkRecordingJobProcessed(ctx context.Context, callID string) error {
-	_, err := s.pool.Exec(ctx, `
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	_, err = tx.Exec(ctx, `
 		UPDATE recording_jobs
 		SET status = 'processed',
 		    processed_at = now()
 		WHERE call_id = $1
 	`, callID)
+	if err != nil {
+		return err
+	}
 
-	return err
+	_, err = tx.Exec(ctx, `
+		UPDATE calls
+		SET recording_processed = TRUE,
+		    updated_at = now()
+		WHERE call_id = $1
+	`, callID)
+	if err != nil {
+		return err
+	}
+
+	return tx.Commit(ctx)
 }
