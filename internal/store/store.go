@@ -163,6 +163,18 @@ func (s *Store) IngestEvent(ctx context.Context, e Event) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	if e.RecordingURL != "" {
+		_, err = tx.Exec(ctx,
+			`INSERT INTO recording_jobs (call_id, recording_url)
+         VALUES ($1, $2)
+         ON CONFLICT (call_id) DO NOTHING`,
+			e.CallID,
+			e.RecordingURL,
+		)
+		if err != nil {
+			return false, err
+		}
+	}
 
 	if err := tx.Commit(ctx); err != nil {
 		return false, err
