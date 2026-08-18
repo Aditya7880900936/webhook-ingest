@@ -278,7 +278,8 @@ func (s *Store) ClaimRecordingJobs(ctx context.Context, limit int) ([]RecordingJ
 	for _, job := range jobs {
 		_, err := tx.Exec(ctx, `
 			UPDATE recording_jobs
-			SET status = 'processing'
+			SET status = 'processing',
+			    processing_at = now()
 			WHERE call_id = $1
 		`, job.CallID)
 
@@ -292,6 +293,18 @@ func (s *Store) ClaimRecordingJobs(ctx context.Context, limit int) ([]RecordingJ
 	}
 
 	return jobs, nil
+}
+
+func (s *Store) RecoverStaleRecordingJobs(ctx context.Context, timeout time.Duration) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE recording_jobs
+		SET status = 'pending',
+		    processing_at = NULL
+		WHERE status = 'processing'
+		  AND processing_at < now() - ($1 * interval '1 second')
+	`, timeout.Seconds())
+
+	return err
 }
 
 // MarkRecordingJobProcessed marks a durable recording job as completed.

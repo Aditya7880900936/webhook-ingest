@@ -43,8 +43,10 @@ func main() {
 
 	svc := ingest.New(st, stats.NewCache(), rdb, log)
 
-	// Start durable recording worker.
-	svc.StartRecordingWorker(ctx)
+	workerCtx, workerCancel := context.WithCancel(context.Background())
+	defer workerCancel()
+
+	svc.StartRecordingWorker(workerCtx)
 
 	srv := &http.Server{
 		Addr:    cfg.HTTPAddr,
